@@ -17,8 +17,8 @@ export function RecentScores({ scores }: { scores: PublicScore[] }) {
               <div className="flex flex-col gap-1">
                 <span className="font-display text-xs tracking-widest text-accent">{s.initials}</span>
                 <span className="text-xs text-muted">
-                  <time dateTime={s.createdAt.toISOString()}>{timeFormat.format(s.createdAt)}</time>
-                  {s.platform ? ` · ${s.platform}` : ''}
+                  <time dateTime={s.achievedAt.toISOString()}>{timeFormat.format(s.achievedAt)}</time>
+                  {` · ${s.platform}`}
                 </span>
               </div>
               <span className="tabular-nums text-sm font-bold text-foreground">{s.score.toLocaleString('en-US')}</span>

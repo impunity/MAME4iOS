@@ -1,86 +1,74 @@
-import { and, asc, count, desc, eq, gt, max } from 'drizzle-orm'
-import { z } from 'zod'
-import { db } from '@/lib/db'
-import { highScores } from '@/lib/db/schema'
+const VIEW = 'all_time_heroes'
+const COLUMNS = 'id,rank,player_name,score,achieved_at,platform,country_code,region'
 
-export const DEFAULT_GAME = 'robotron'
-
-export const gameSchema = z
-  .string()
-  .trim()
-  .toLowerCase()
-  .regex(/^[a-z0-9_]{1,16}$/, 'game must be a MAME romset name')
-
-export const submitScoreSchema = z.object({
-  game: gameSchema.default(DEFAULT_GAME),
-  initials: z
-    .string()
-    .trim()
-    .toUpperCase()
-    .regex(/^[A-Z0-9 .]{1,3}$/, 'initials must be 1-3 letters or digits'),
-  score: z.number().int().min(0).max(99_999_999),
-  wave: z.number().int().min(0).max(9999).optional(),
-  deviceId: z.string().trim().max(64).optional(),
-  platform: z.enum(['ios', 'tvos', 'macos', 'other']).optional(),
-})
-
-export type SubmitScoreInput = z.infer<typeof submitScoreSchema>
-
-const publicColumns = {
-  id: highScores.id,
-  game: highScores.game,
-  initials: highScores.initials,
-  score: highScores.score,
-  wave: highScores.wave,
-  platform: highScores.platform,
-  createdAt: highScores.createdAt,
+type Row = {
+  id: string
+  rank: number
+  player_name: string
+  score: number
+  achieved_at: string
+  platform: string
+  country_code: string
+  region: string
 }
 
-export type PublicScore = Awaited<ReturnType<typeof getTopScores>>[number]
-
-export async function getTopScores(game = DEFAULT_GAME, limit = 10) {
-  return db
-    .select(publicColumns)
-    .from(highScores)
-    .where(eq(highScores.game, game))
-    .orderBy(desc(highScores.score), asc(highScores.createdAt))
-    .limit(limit)
+export type PublicScore = {
+  id: string
+  rank: number
+  initials: string
+  score: number
+  achievedAt: Date
+  platform: string
+  countryCode: string
+  region: string
 }
 
-export async function getRecentScores(game = DEFAULT_GAME, limit = 8) {
-  return db
-    .select(publicColumns)
-    .from(highScores)
-    .where(eq(highScores.game, game))
-    .orderBy(desc(highScores.createdAt))
-    .limit(limit)
+function config() {
+  const url = process.env.SUPABASE_URL
+  const key = process.env.SUPABASE_ANON_KEY
+  if (!url || !key) throw new Error('SUPABASE_URL and SUPABASE_ANON_KEY must be set')
+  return { url, key }
 }
 
-export async function getStats(game = DEFAULT_GAME) {
-  const [row] = await db
-    .select({ total: count(), best: max(highScores.score) })
-    .from(highScores)
-    .where(eq(highScores.game, game))
-  return { total: row?.total ?? 0, best: row?.best ?? 0 }
+async function query(params: string, init?: { count?: boolean }) {
+  const { url, key } = config()
+  const response = await fetch(`${url}/rest/v1/${VIEW}?${params}`, {
+    headers: {
+      apikey: key,
+      Authorization: `Bearer ${key}`,
+      ...(init?.count ? { Prefer: 'count=exact' } : {}),
+    },
+    next: { revalidate: 30 },
+  })
+  if (!response.ok) throw new Error(`Supabase ${VIEW} request failed: ${response.status}`)
+  return response
 }
 
-export async function insertScore(input: SubmitScoreInput) {
-  const [row] = await db
-    .insert(highScores)
-    .values({
-      game: input.game,
-      initials: input.initials,
-      score: input.score,
-      wave: input.wave,
-      deviceId: input.deviceId,
-      platform: input.platform,
-    })
-    .returning(publicColumns)
+function toPublic(row: Row): PublicScore {
+  return {
+    id: row.id,
+    rank: row.rank,
+    initials: row.player_name,
+    score: Number(row.score),
+    achievedAt: new Date(row.achieved_at),
+    platform: row.platform,
+    countryCode: row.country_code,
+    region: row.region,
+  }
+}
 
-  const [{ higher }] = await db
-    .select({ higher: count() })
-    .from(highScores)
-    .where(and(eq(highScores.game, input.game), gt(highScores.score, input.score)))
+export async function getTopScores(limit = 10) {
+  const response = await query(`select=${COLUMNS}&order=rank.asc&limit=${limit}`)
+  return ((await response.json()) as Row[]).map(toPublic)
+}
 
-  return { ...row, rank: higher + 1 }
+export async function getRecentScores(limit = 8) {
+  const response = await query(`select=${COLUMNS}&order=achieved_at.desc&limit=${limit}`)
+  return ((await response.json()) as Row[]).map(toPublic)
+}
+
+export async function getTotalScores() {
+  const response = await query('select=id&limit=1', { count: true })
+  // PostgREST returns the exact total as "0-0/123" in Content-Range.
+  return Number(response.headers.get('content-range')?.split('/')[1]) || 0
 }
